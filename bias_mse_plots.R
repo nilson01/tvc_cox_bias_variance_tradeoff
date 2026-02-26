@@ -10,32 +10,17 @@ invisible(lapply(req_pkgs, function(p) {
 # ============================================================
 # 01) Paths (edit these two only)
 # ============================================================
-# DATA_DIR <- "/Users/nilson/Desktop/internship st jude/final_code/data_uniform"
-# OUT_DIR  <- file.path("/Users/nilson/Desktop/internship st jude/final_code/1. Plots/plot_uniform")
-# 
-# # DATA_DIR <- "/Users/nilson/Desktop/internship st jude/final_code/data_weibull"
-# # OUT_DIR  <- file.path("/Users/nilson/Desktop/internship st jude/final_code/1. Plots/plot_weibull")
-# 
-# if (!dir.exists(OUT_DIR)) dir.create(OUT_DIR, recursive = TRUE)
-# RDS_PATH <- file.path(DATA_DIR, "fit_results_summary.rds")
+DATA_DIR <- "/Users/nilson/Desktop/internship st jude/final_code/data_uniform"
+OUT_DIR  <- file.path("/Users/nilson/Desktop/internship st jude/final_code/1. Plots/plot_uniform")
 
-# Root directory that contains all scenario folders
+# DATA_DIR <- "/Users/nilson/Desktop/internship st jude/final_code/data_weibull"
 
-# ROOT_DIR <- "/Users/nilson/Desktop/internship st jude/final_code/ALL_RESULTS/alpha_0_DGP/Uniform"
-# ROOT_DIR <- "/Users/nilson/Desktop/internship st jude/final_code/ALL_RESULTS/alpha_1_DGP/Uniform"
-
-
-
-
-# ROOT_DIR <- "/Users/nilson/Desktop/internship st jude/paper plots/main_alpha_0"
-ROOT_DIR <- "/Users/nilson/Desktop/internship st jude/paper plots/final_runs"
 
 
 # ============================================================
 # 02) USER SETTINGS: n groups (auto-generate BOTH)
 # ============================================================
 n_small <- c(50, 100)
-# n_large <- c(250, 500, 1500, 3000, 5000)
 n_large <- c(250, 500, 1500, 3000)
 
 
@@ -57,12 +42,7 @@ HIDE_LABEL_N_L0      <- c()
 # ============================================================
 # 01b) DGP tag for filenames (Uniform vs Weibull)
 # ============================================================
-# detect_dgp_tag <- function(data_dir, out_dir) {
-#   x <- tolower(paste(data_dir, out_dir))
-#   if (grepl("unif", x) || grepl("uniform", x)) return("Uniform")
-#   if (grepl("weib", x) || grepl("weibull", x)) return("Weibull")
-#   stop("Cannot detect DGP tag from DATA_DIR/OUT_DIR. Please set DGP_TAG manually.")
-# }
+
 detect_dgp_tag <- function(data_dir, out_dir) {
   x <- tolower(paste(data_dir, out_dir))
   if (grepl("unif", x) || grepl("uniform", x)) return("Uniform")
@@ -71,12 +51,6 @@ detect_dgp_tag <- function(data_dir, out_dir) {
 }
 
 
-# DGP_TAG <- detect_dgp_tag(DATA_DIR, OUT_DIR)
-
-# with_dgp_suffix <- function(filename, tag = DGP_TAG) {
-#   tools::file_path_sans_ext(filename) %>%
-#     paste0("_", tag, ".", tools::file_ext(filename))
-# }
 with_dgp_suffix <- function(filename, tag) {
   tools::file_path_sans_ext(filename) %>%
     paste0("_", tag, ".", tools::file_ext(filename))
@@ -591,35 +565,5 @@ for (scen in scenario_dirs) {
 
 
 
-
-
-
-# 
-# dir.exists(ROOT_DIR)
-# scenario_dirs <- list.dirs(ROOT_DIR, recursive = FALSE)
-# head(scenario_dirs)
-# 
-# # Check first scenario has the expected RDS
-# file.exists(file.path(scenario_dirs[1], "data_uniform", "fit_results_summary.rds"))
-
-
-
-# 
-# for (scen in scenario_dirs) {
-#   data_dir <- file.path(scen, "data_uniform")
-#   out_dir  <- file.path(scen, "plots")
-#   if (!dir.exists(data_dir)) next
-#   
-#   message("\n=== SCENARIO: ", basename(scen), " ===")
-#   
-#   withCallingHandlers(
-#     tryCatch(run_one_scenario(data_dir, out_dir),
-#              error = function(e) message("ERROR: ", conditionMessage(e))),
-#     warning = function(w) {
-#       message("WARNING in ", basename(scen), ": ", conditionMessage(w))
-#       invokeRestart("muffleWarning")
-#     }
-#   )
-# }
 
 

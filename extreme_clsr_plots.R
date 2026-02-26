@@ -22,12 +22,8 @@ if (has_patchwork) library(patchwork)
 # 01) ROOT PATH (EDIT THIS)
 # -----------------------------
 
-# ROOT_DIR <- "/Users/nilson/Desktop/internship st jude/final_code/ALL_RESULTS/alpha_0_DGP/Uniform"
-# ROOT_DIR <- "/Users/nilson/Desktop/internship st jude/final_code/ALL_RESULTS/alpha_1_DGP/Uniform"
+ROOT_DIR <- "/Users/nilson/Desktop/internship st jude/final_code/ALL_RESULTS/alpha_0_DGP/Uniform"
 
-
-# ROOT_DIR <- "/Users/nilson/Desktop/internship st jude/paper plots/main_alpha_0"
-ROOT_DIR <- "/Users/nilson/Desktop/internship st jude/paper plots/final_runs"
 
 # Decide data subfolder name from ROOT_DIR
 DATA_SUBDIR <- if (grepl("weib", tolower(ROOT_DIR))) "data_weibull" else "data_uniform"
@@ -45,7 +41,6 @@ FP_MODEL_NAME   <- "Z + D + X1 + X2"
 threshold_high <- 100
 threshold_low  <- 0.001
 
-# sample_ns       <- c(50, 100, 250, 500, 1500, 3000, 5000)
 sample_ns       <- c(50, 100, 250, 500, 1500, 3000)
 
 # Bin definitions (manual)
