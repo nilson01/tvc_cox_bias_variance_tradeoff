@@ -918,17 +918,37 @@ run_scenario <- function(row_idx) {
   
 
 
-  true_clsr_population <- function(tlim, beta_E, lambda_E, gamma0, gamma_d) {
+#   true_clsr_population <- function(tlim, beta_E, lambda_E, gamma0, gamma_d) {
+#   if (!is.finite(tlim) || tlim <= 0) return(NA_real_)
+#   if (abs(gamma_d) < 1e-12) return(exp(gamma0))
+
+#   h0 <- function(u) (lambda_E^beta_E) * beta_E * (u^(beta_E - 1))
+#   integrand <- function(u) h0(u) * exp(gamma_d * u)
+
+#   num <- stats::integrate(integrand, lower = 0, upper = tlim, rel.tol = 1e-10)$value
+#   den <- (lambda_E * tlim)^beta_E
+#   exp(gamma0) * num / den
+# }
+
+
+true_clsr_population <- function(tlim, beta_E, lambda_E, gamma0, gamma_d) {
   if (!is.finite(tlim) || tlim <= 0) return(NA_real_)
   if (abs(gamma_d) < 1e-12) return(exp(gamma0))
 
-  h0 <- function(u) (lambda_E^beta_E) * beta_E * (u^(beta_E - 1))
-  integrand <- function(u) h0(u) * exp(gamma_d * u)
+  eps0 <- 1e-12
+  integrand <- function(u) {
+    u <- pmax(u, eps0)
+    h0 <- (lambda_E^beta_E) * beta_E * u^(beta_E - 1)
+    h0 * exp(gamma_d * u)
+  }
 
-  num <- stats::integrate(integrand, lower = 0, upper = tlim, rel.tol = 1e-10)$value
+  num <- stats::integrate(integrand, lower = 0, upper = tlim,
+                          rel.tol = 1e-10, subdivisions = 200L)$value
   den <- (lambda_E * tlim)^beta_E
   exp(gamma0) * num / den
 }
+
+
 
 clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
                          numeric(1),
