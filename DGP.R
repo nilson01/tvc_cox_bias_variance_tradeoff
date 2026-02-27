@@ -916,6 +916,30 @@ run_scenario <- function(row_idx) {
   
   
   
+
+
+  true_clsr_population <- function(tlim, beta_E, lambda_E, gamma0, gamma_d) {
+  if (!is.finite(tlim) || tlim <= 0) return(NA_real_)
+  if (abs(gamma_d) < 1e-12) return(exp(gamma0))
+
+  h0 <- function(u) (lambda_E^beta_E) * beta_E * (u^(beta_E - 1))
+  integrand <- function(u) h0(u) * exp(gamma_d * u)
+
+  num <- stats::integrate(integrand, lower = 0, upper = tlim, rel.tol = 1e-10)$value
+  den <- (lambda_E * tlim)^beta_E
+  exp(gamma0) * num / den
+}
+
+clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
+                         numeric(1),
+                         beta_E = be, lambda_E = lambda_E,
+                         gamma0 = gamma0, gamma_d = loghr_D)
+
+
+
+
+
+
   # =========================================================================
   # Define a function to process ONE replication
   # =========================================================================
@@ -954,17 +978,19 @@ run_scenario <- function(row_idx) {
     names(post_upto_q_vec) <- q_names
     
     # True CLSR computation
-    q_times <- q_times_all
-    disc_true_clsr <- function(tlim) {
-      if (!is.finite(tlim)) return(NA_real_)
-      ev_times_rep <- sort(dat$futime[dat$status == 1 & dat$futime <= study_time])
-      tt <- ev_times_rep[ev_times_rep <= tlim]
-      if (length(tt) == 0) return(NA_real_)
-      L0_true_at <- true_Lambda0(tt, be, lambda_E)
-      dLam_true  <- diff(c(0, L0_true_at))
-      exp(gamma0) * (sum(dLam_true * exp(loghr_D * tt)) / sum(dLam_true))
-    }
-    clsr_true_vec <- vapply(q_times, disc_true_clsr, numeric(1))
+    # q_times <- q_times_all
+    # disc_true_clsr <- function(tlim) {
+    #   if (!is.finite(tlim)) return(NA_real_)
+    #   ev_times_rep <- sort(dat$futime[dat$status == 1 & dat$futime <= study_time])
+    #   tt <- ev_times_rep[ev_times_rep <= tlim]
+    #   if (length(tt) == 0) return(NA_real_)
+    #   L0_true_at <- true_Lambda0(tt, be, lambda_E)
+    #   dLam_true  <- diff(c(0, L0_true_at))
+    #   exp(gamma0) * (sum(dLam_true * exp(loghr_D * tt)) / sum(dLam_true))
+    # }
+    # clsr_true_vec <- vapply(q_times, disc_true_clsr, numeric(1))
+
+    # clsr_true_vec <- clsr_truth_pop
     
     L0_true_vec <- ifelse(is.finite(q_times), true_Lambda0(q_times, be, lambda_E), NA_real_)
     h0_true_vec <- ifelse(is.finite(q_times), true_h0(q_times, be, lambda_E), NA_real_)
@@ -1097,7 +1123,11 @@ run_scenario <- function(row_idx) {
       Dpost_med = Dpost_med_val,
       Dpost_max = Dpost_max_val,
       post_upto_q = post_upto_q_vec,
-      truth_CLSR = clsr_true_vec,
+
+      # truth_CLSR = clsr_true_vec,
+      truth_CLSR = clsr_truth_pop,
+
+
       truth_L0 = L0_true_vec,
       truth_h0 = h0_true_vec,
       est_Z = est_Z_vec,
