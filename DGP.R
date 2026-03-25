@@ -1,26 +1,83 @@
+# -----------------------------------------------------------------------------
+# Command-line input
+# -----------------------------------------------------------------------------
+# This file is run by:
+#   1) run_dgp_unified.sh (single run)
+#   2) submit_dgp_param_sets.sh -> run_dgp_unified.sh (many runs)
+#
+# We read these args:
+#   --dgp, --model, --beta-e, --beta-t, --hr, --gam-d,
+#   --alpha0, --ax1, --ax2, --b, --n-vals, --lambda-e, --lambda-t
+#
+# Notes:
+#   - One parser handles both single values and comma-separated lists.
+#   - Example list input: "1,1.5".
+#   - If an arg is missing, we use defaults below.
+#
+# File layout (high level):
+#   1) CLI + config
+#   2) helper functions
+#   3) cache + scenario run
+#   4) data generation
+#   5) pipeline + summary
+#   6) main entrypoint
+args <- commandArgs(trailingOnly = TRUE)
+arg_map <- list()
+if (length(args) > 0) {
+  for (a in args) {
+    if (grepl("=", a, fixed = TRUE)) {
+      kv <- strsplit(a, "=", fixed = TRUE)[[1]]
+      k <- tolower(gsub("^--", "", kv[1]))
+      v <- paste(kv[-1], collapse = "=")
+      arg_map[[k]] <- v
+    }
+  }
+}
 
-# Sys.getenv("SLURM_SUBMIT_DIR", unset = getwd())
+arg_get <- function(key, default = NULL) {
+  key <- tolower(gsub("^--", "", key))
+  if (!is.null(arg_map[[key]]) && nzchar(arg_map[[key]])) arg_map[[key]] else default
+}
 
-# On cluster: use the directory 
-# setwd(Sys.getenv("SLURM_SUBMIT_DIR", unset = getwd()))
+parse_num_vec <- function(x, default) {
+  # Read comma-separated numbers from shell args.
+  # If parsing fails, keep the default values.
+  if (is.null(x) || !nzchar(x)) return(default)
+  out <- suppressWarnings(as.numeric(strsplit(x, ",", fixed = TRUE)[[1]]))
+  out <- out[is.finite(out)]
+  if (length(out) == 0) default else out
+}
 
-# setwd("/scratch/user/nchapagain/tvccsb")
+dgp_type <- tolower(arg_get("dgp", "weibull"))
+if (!(dgp_type %in% c("uniform", "weibull"))) {
+  stop("Invalid --dgp. Use one of: uniform, weibull")
+}
 
+model_choice <- tolower(arg_get("model", "frvsfp"))
+if (!(model_choice %in% c("frvsfp", "ctvsth"))) {
+  stop("Invalid --model. Use one of: frvsfp, ctvsth")
+}
 
+shape_vals_beta_E <- c(1)
+shape_vals_beta_T <- c(1)
+HR_vals           <- c(exp(1))
+gam_ds_log        <- c(0.5)
 
+a_h <- 1
+alpha0s <- c(a_h)
+a_x1s   <- c(a_h)
+a_x2s   <- c(a_h)
 
+# Optional CLI overrides (comma-separated vectors)
+shape_vals_beta_E <- parse_num_vec(arg_get("beta-e", NULL), shape_vals_beta_E)
+shape_vals_beta_T <- parse_num_vec(arg_get("beta-t", NULL), shape_vals_beta_T)
+HR_vals           <- parse_num_vec(arg_get("hr", NULL), HR_vals)
+gam_ds_log        <- parse_num_vec(arg_get("gam-d", NULL), gam_ds_log)
+alpha0s           <- parse_num_vec(arg_get("alpha0", NULL), alpha0s)
+a_x1s             <- parse_num_vec(arg_get("ax1", NULL), a_x1s)
+a_x2s             <- parse_num_vec(arg_get("ax2", NULL), a_x2s)
 
-#..............................................................................
-
-
-#..............................................................................
-#..............................................................................
-## ---- Packages ----
-#..............................................................................
-#..............................................................................
-# 
-
-
+# ---- Packages ----
 pkgs <- c(
   "data.table","survival","numDeriv","coxphf","knitr",
   "ggplot2", "pracma","nleqslv",
@@ -38,133 +95,74 @@ if (any(!ok)) stop("Missing packages: ", paste(pkgs[!ok], collapse = ", "))
 
 options(repr.plot.width = 28, repr.plot.height = 10)
 
+# ===== Setup and configuration =====
+# Keep these defaults in sync with run_dgp_unified.sh.
+# That way local runs and batch runs behave the same unless changed.
+B <- 1000
+B <- as.integer(arg_get("b", as.character(B)))
+if (!is.finite(B) || B < 1) stop("Invalid --b. Must be a positive integer.")
 
+n_vals <- c(50, 100, 250, 500, 1500, 3000)
+n_vals <- parse_num_vec(arg_get("n-vals", NULL), n_vals)
 
-
-# 00_setup.R
-
-# ----TOP----
-
-
-
-#..............................................................................
-#..............................................................................
-##----Global variables----
-#..............................................................................
-#..............................................................................
-
-
-## Parameters
-
-
-B  <- 1000
-
-
-
-
-# ---- #
-
-# shape_vals_beta_E <- c(1)
-# shape_vals_beta_E <- c(1.5)
-shape_vals_beta_E <- c(0.5) # 1, 1,5
-
-# HR_vals    <- c(exp(1)) # gamma_0 = 1
-# HR_vals    <- c(exp(-1)) # gamma_0 = -1
-HR_vals    <- c(1) # gamma_0 = 0
-
-# gam_ds_log <- c(1)
-gam_ds_log <- c(0.5)
-# gam_ds_log <- c(0)
-
-
-a_l <- 0; a_h <- 1;
-
-alpha0s  <- c(a_l)
-a_x1s    <- c(a_l)
-a_x2s    <- c(a_l)
-
-
-# alpha0s  <- c(a_h)
-# a_x1s    <- c(a_h)
-# a_x2s    <- c(a_h)
-
-
-# weibull
-shape_vals_beta_T <- c(1)
-
-n_vals     <- c(50, 100, 250, 500, 1500, 3000) # 100, 512
 q_probs  <- c(0.75, 0.90, 0.99)
 q_names  <- paste0("q_", as.integer(round(100 * q_probs)))
 
-
-# lambda_E   <- 3
-# lambda_T   <- 6
-
-
-lambda_E   <- 3
-lambda_T   <- 6
+lambda_E <- 3
+lambda_T <- 6
+lambda_E <- as.numeric(arg_get("lambda-e", as.character(lambda_E)))
+lambda_T <- as.numeric(arg_get("lambda-t", as.character(lambda_T)))
+if (!is.finite(lambda_E) || lambda_E <= 0) stop("Invalid --lambda-e. Must be > 0.")
+if (!is.finite(lambda_T) || lambda_T <= 0) stop("Invalid --lambda-t. Must be > 0.")
 
 study_time <- 1
 tol        <- 1e-5
 max_it     <- 50
 quantile   <- 0.75
 
-
-
-
-
-# Model specs and grid
-
-
-# model_specs <- list(
-#   "Z + D + X1 + X2" = list(
-#     fml     = Surv(futime, status) ~ X1 + X2 + tt(T_treat) + tt(D_treat),
-#     tt_vars = c("Z0","D0")
-#   ),
-#   "Z + X1 + X2" = list(
-#     fml     = Surv(futime, status) ~ X1 + X2 + tt(T_treat),
-#     tt_vars = c("Z0")
-#   )
-# )
-
-
-
-
-
-model_specs <- list(
-  "Z + D" = list(
-    fml     = Surv(futime, status) ~ tt(T_treat) + tt(D_treat),
-    tt_vars = c("Z0","D0")
-  ),
-  "Z" = list(
-    fml     = Surv(futime, status) ~ tt(T_treat),
-    tt_vars = c("Z0")
+# Model setup
+# model_choice picks which formula set we use.
+# We map tt_vars later so the formula and tt() functions stay in sync.
+model_specs <- if (model_choice == "frvsfp") {
+  list(
+    "Z + D + X1 + X2" = list(
+      fml     = Surv(futime, status) ~ X1 + X2 + tt(T_treat) + tt(D_treat),
+      tt_vars = c("Z0","D0")
+    ),
+    "Z + X1 + X2" = list(
+      fml     = Surv(futime, status) ~ X1 + X2 + tt(T_treat),
+      tt_vars = c("Z0")
+    )
   )
-)
-
-
-
-
+} else {
+  list(
+    "Z + D" = list(
+      fml     = Surv(futime, status) ~ tt(T_treat) + tt(D_treat),
+      tt_vars = c("Z0","D0")
+    ),
+    "Z" = list(
+      fml     = Surv(futime, status) ~ tt(T_treat),
+      tt_vars = c("Z0")
+    )
+  )
+}
 
 # -------------------------------
-# Run ID builder (jobid + params + B)
+# Run ID builder
 # -------------------------------
 make_run_id <- function(B,
                         beta_E, lambda_E, beta_T, lambda_T,
                         gamma_0, gamma_d,
                         alpha0, alpha_1, alpha_2,
                         n_vals) {
-  
-  # --- SLURM identity (ONLY job id) ---
   job_id <- Sys.getenv("SLURM_JOB_ID", unset = "")
-  
+
   base_id <- if (nzchar(job_id)) {
     paste0("job_", job_id)
   } else {
     paste0("local_", format(Sys.time(), "%Y%m%d_%H%M%S"))
   }
-  
-  # --- compact formatting helpers ---
+
   fmt <- function(x) {
     x <- as.numeric(x)
     s <- format(x, scientific = FALSE, trim = TRUE)
@@ -173,11 +171,9 @@ make_run_id <- function(B,
     s
   }
   fmt_vec <- function(x) paste(fmt(x), collapse = "-")
-  
-  # --- alpha collapse rule: only write alpha_i_0 or alpha_i_1 ---
+
   alpha_i_tag <- if (all(c(alpha0, alpha_1, alpha_2) == 0)) "alpha_i_0" else "alpha_i_1"
-  
-  # --- build param tag string ---
+
   param_tag <- paste(
     paste0("B_",        as.integer(B)),
     paste0("beta_E_",   fmt(beta_E)),
@@ -190,46 +186,33 @@ make_run_id <- function(B,
     paste0("n_",        fmt_vec(n_vals)),
     sep = "_"
   )
-  
-  paste0(param_tag, "__", base_id)
-  
-}
 
+  paste0(param_tag, "__", base_id)
+}
 
 PREPARE_DATA <- TRUE
 
-
-
+# Run IDs are parameter-aware for reproducibility and safe parallel submissions:
+# each job writes into a distinct directory keyed by scenario settings + SLURM job id.
 RUN_ID <- make_run_id(
   B        = B,
   beta_E   = shape_vals_beta_E[1],
   lambda_E = lambda_E,
   beta_T   = shape_vals_beta_T[1],
   lambda_T = lambda_T,
-  gamma_0  = log(HR_vals)[1], 
-  gamma_d  = gam_ds_log[1], 
+  gamma_0  = log(HR_vals)[1],
+  gamma_d  = gam_ds_log[1],
   alpha0   = alpha0s[1],
   alpha_1  = a_x1s[1],
   alpha_2  = a_x2s[1],
   n_vals   = n_vals
 )
+RUN_ID <- paste0("dgp_", dgp_type, "_model_", model_choice, "__", RUN_ID)
 
-
-
-
-
-
-
-
-BASE_DIR <- "/scratch/user/nchapagain/tvccsb"
-
-# One folder per run
-RUN_DIR <- file.path(BASE_DIR, "tvccsb_runs", RUN_ID)
-
-# Dataset folder inside the run folder ( switch depending on DGP type)
-DATA_FOLDER_NAME <- "data_weibull"   # or "data_uniform" "data_weibull"
-
-
+BASE_DIR <- Sys.getenv("TVCCSB_BASE_DIR", unset = "/scratch/user/nchapagain/tvccsb")
+RUNS_ROOT_DIR <- Sys.getenv("TVCCSB_RUNS_DIR", unset = file.path(BASE_DIR, "tvccsb_runs"))
+RUN_DIR <- file.path(RUNS_ROOT_DIR, RUN_ID)
+DATA_FOLDER_NAME <- paste0("data_", dgp_type)
 DATA_DIR <- file.path(RUN_DIR, DATA_FOLDER_NAME)
 
 dir.create(DATA_DIR, recursive = TRUE, showWarnings = FALSE)
@@ -238,8 +221,9 @@ cat("RUN_ID           =", RUN_ID, "\n")
 cat("RUN_DIR          =", RUN_DIR, "\n")
 cat("DATA_FOLDER_NAME =", DATA_FOLDER_NAME, "\n")
 cat("DATA_DIR         =", DATA_DIR, "\n")
+cat("DGP Type         =", dgp_type, "\n")
+cat("Model Choice     =", model_choice, "\n")
 
-# Fail fast if not writable
 tf <- file.path(DATA_DIR, sprintf(".write_test_%d", Sys.getpid()))
 tryCatch({
   writeLines("ok", tf)
@@ -248,24 +232,17 @@ tryCatch({
   stop("DATA_DIR is not writable: ", DATA_DIR, "\n", conditionMessage(e))
 })
 
-
-
-
-SEED_BASE    <- 1234
+SEED_BASE <- 1234
 if (PREPARE_DATA) dir.create(DATA_DIR, showWarnings = FALSE, recursive = TRUE)
 
-## Threads
 Sys.setenv(OMP_NUM_THREADS = "1", MKL_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1")
 if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
   RhpcBLASctl::blas_set_num_threads(1)
   RhpcBLASctl::omp_set_num_threads(1)
 }
 
-
-
-
-
-
+# All scenario combinations.
+# Each row is one scenario we cache and later summarize.
 param_grid <- expand.grid(
   beta_T = shape_vals_beta_T,
   beta_E = shape_vals_beta_E,
@@ -283,27 +260,19 @@ cat("<----------------\n",
     "  #Scenarios (grid rows)     = ", nrow(param_grid), "\n",
     "------------------>\n", sep = "")
 
-## Progress handlers
 options(progressr.enable = TRUE, progressr.clear = FALSE)
 progressr::handlers(global = TRUE)
 progressr::handlers(progressr::handler_txtprogressbar)
 progress_every <- max(1L, floor(B / 20L))
 progress_steps <- nrow(param_grid) * ceiling(B / progress_every)
+progress_steps <- nrow(param_grid) * ceiling(B / progress_every)
 
 
-
-
-# ----EOF----
-
-
-
-
-# 01_helper functions
-
-# ----TOP----
+# ===== 01: Helper functions =====
 
 
 .rep_audit_counts <- function(dat) {
+  # Small helper for common event-count checks.
   n <- nrow(dat)
   n_events   <- sum(dat$status == 1)
   n_censored <- n - n_events
@@ -319,12 +288,7 @@ progress_steps <- nrow(param_grid) * ceiling(B / progress_every)
 
 
 # Inversion helpers
-
-#..............................................................................
-#..............................................................................
-# ----Helper for β_E = 1----
-#..............................................................................
-#..............................................................................
+# Helper for beta_E = 1
 
 invert_branchB_beta1A <- function(y, T0, eta, lambda_E, gamma0, gam_d) {
   # constants
@@ -341,13 +305,34 @@ invert_branchB_beta1A <- function(y, T0, eta, lambda_E, gamma0, gam_d) {
   t
 }
 
+# Helper for beta_E = 1 using Lambert W
 
 
+invert_branchB_beta1B <- function(y, T0, eta, lambda_E, gamma0, gam_d) {
+  if (!requireNamespace("gsl", quietly = TRUE)) {
+    stop("Please install the 'gsl' package to use lambert_W0()")
+  }
+  
+  # constants
+  c0    <- exp(eta)
+  c1    <- exp(eta + gamma0 - gam_d * T0)
+  gamma <- gam_d
+  lam   <- lambda_E
+  w0    <- lam * T0
+  
+  # original term: exp(γ T0) + γ (y - c0 w0)/(lam c1)
+  alpha <- exp(gamma * T0) +
+    gamma * (y - c0 * w0) / (lam * c1)
+  
+  # invert via Lambert W:
+  z <- -log(alpha) / alpha
+  u <- gsl::lambert_W0(z)
+  t <- -u / gamma
+  
+  t
+}
 
 
-
-
-# Numeric inverse
 
 
 
@@ -367,37 +352,25 @@ invert_branchB_beta1A <- function(y, T0, eta, lambda_E, gamma0, gam_d) {
 
 .clamp <- function(x, lo, hi) pmin(pmax(x, lo), hi)
 
-
-# =========================
-# Branch B inversion (gamma_d != 0) via NR + fallbacks
-# =========================
-invert_branchB_NR <- function(y, T_treat, eta,
-                              beta_E, lambda_E,
-                              gamma0, gam_d,
+invert_branchB_NR <- function(y, T_treat, eta, beta_E, lambda_E, gamma0, gam_d,
                               study_time,
-                              q_cap  = 0.999,
-                              tol    = 1e-9,
-                              max_it = 50) {
-  
+                              q_cap = 0.999, tol = 1e-8, max_it = 50) {
+  # Numeric solver for post-treatment times when gamma_d != 0.
+  # Try Newton first, then Broyden, then uniroot.
   if (gam_d == 0) stop("gam_d == 0: use closed-form branch.")
   n <- length(y)
   stopifnot(length(T_treat) == n, length(eta) == n)
-  
-  # Weibull-based time scale cap (baseline event-time quantile)
+
   cap_weib <- stats::qweibull(q_cap, shape = beta_E, scale = 1 / lambda_E)
-  
 
   H_int <- function(t, T0) {
     if (t <= T0) return(0)
-    
-    lower <- max(T0, 1e-12)  # avoid log(0) & u^(beta-1) singular at 0
+    lower <- max(T0, 1e-12)
     upper <- t
-    
     res <- tryCatch(
       stats::integrate(
         f = function(u) {
           u2 <- pmax(u, 1e-12)
-          # log integrand = (beta_E-1)log(u) + gam_d*u
           log_val <- (beta_E - 1) * log(u2) + gam_d * u2
           .safe_exp(log_val)
         },
@@ -410,88 +383,52 @@ invert_branchB_NR <- function(y, T_treat, eta,
     )
     res$value
   }
-  
+
   out <- numeric(n)
   res_vals <- numeric(n)
-  
+
   for (i in seq_len(n)) {
-    
     T0   <- T_treat[i]
     yi   <- y[i]
     etai <- eta[i]
-    
-    # constants A and B 
+
     A  <- exp(etai) * (lambda_E * T0)^beta_E
     Bc <- exp(etai + gamma0 - gam_d * T0) * lambda_E^beta_E * beta_E
-    
-    # Region A (event before treatment)
+
     if (yi <= A) {
       out[i] <- ((yi / exp(etai))^(1 / beta_E)) / lambda_E
       res_vals[i] <- 0
       next
     }
-    
-    # -------------------------
-    # Safe search interval (bounded)
-    # -------------------------
+
     eps  <- 1e-10
     t_lo <- max(T0 + eps, 1e-12)
-    
-
-    t_hi <- T0 + max(
-      study_time,
-      10 * cap_weib,
-      20 / max(abs(gam_d), 1e-3)
-    )
-    
-    if (!is.finite(t_hi) || t_hi <= t_lo) {
-      t_hi <- T0 + max(10 * cap_weib, 1)
-    }
-    
-    # Hard cap for any bracket expansion (no 1e6 wandering)
+    t_hi <- T0 + max(study_time, 10 * cap_weib, 20 / max(abs(gam_d), 1e-3))
+    if (!is.finite(t_hi) || t_hi <= t_lo) t_hi <- T0 + max(10 * cap_weib, 1)
     t_hard <- t_hi
-    
-    # -------------------------
-    # f(t) and f'(t)
-    # -------------------------
+
     f_fun <- function(t) {
       t <- .clamp(t, t_lo, t_hard)
       H <- H_int(t, T0)
-      if (!is.finite(H)) return(1e100)   # keep solver moving
+      if (!is.finite(H)) return(1e100)
       val <- A + Bc * H - yi
       .safe_finite(val, 1e100)
     }
-    
-    # NOTE: derivative of A + Bc*∫(...) is Bc * t^(beta-1) * exp(gam_d t)
-    # Compute in log-space to avoid overflow.
+
     df_fun <- function(t) {
       t <- .clamp(t, t_lo, t_hard)
-      # log(df) = log(Bc) + (beta_E-1)log(t) + gam_d*t
       log_df <- log(Bc) + (beta_E - 1) * log(pmax(t, 1e-12)) + gam_d * t
       val <- .safe_exp(log_df)
       .safe_finite(val, 1e-12)
     }
-    
-    # -------------------------
-    # Initial guess: Newton-style increment but bounded
-    # -------------------------
+
     denom0  <- df_fun(t_lo)
     raw_inc <- (yi - A) / .safe_finite(denom0, 1e-8)
-    
     max_inc <- 10 / max(abs(gam_d), 1e-3)
     inc <- pmin(pmax(raw_inc, -max_inc), max_inc)
-    
     if (!is.finite(inc) || abs(inc) < 1e-6) inc <- sign(raw_inc) * (1 / lambda_E)
-    
     t0 <- .clamp(T0 + inc, t_lo, t_hard)
-    
-    # =========================================================
-    # Attempt 1: nleqslv with jac
-    # Attempt 2: nleqslv Broyden
-    # Attempt 3: uniroot bracket (monotone increasing f)
-    # Final: return t_hard
-    # =========================================================
-    
+
     sol <- tryCatch(
       nleqslv::nleqslv(
         x       = t0,
@@ -501,14 +438,10 @@ invert_branchB_NR <- function(y, T_treat, eta,
       ),
       error = function(e) NULL
     )
-    
-    ok1 <- !is.null(sol) &&
-      is.finite(sol$x) &&
-      sol$x > T0 &&
-      (sol$termcd %in% c(1, 2)) &&
-      is.finite(f_fun(sol$x)) &&
-      abs(f_fun(sol$x)) <= 1e-4
-    
+
+    ok1 <- !is.null(sol) && is.finite(sol$x) && sol$x > T0 &&
+      (sol$termcd %in% c(1, 2)) && is.finite(f_fun(sol$x)) && abs(f_fun(sol$x)) <= 1e-4
+
     if (!ok1) {
       sol2 <- tryCatch(
         nleqslv::nleqslv(
@@ -519,40 +452,24 @@ invert_branchB_NR <- function(y, T_treat, eta,
         ),
         error = function(e) NULL
       )
-      
-      ok2 <- !is.null(sol2) &&
-        is.finite(sol2$x) &&
-        sol2$x > T0 &&
-        (sol2$termcd %in% c(1, 2)) &&
-        is.finite(f_fun(sol2$x)) &&
-        abs(f_fun(sol2$x)) <= 1e-4
-      
+      ok2 <- !is.null(sol2) && is.finite(sol2$x) && sol2$x > T0 &&
+        (sol2$termcd %in% c(1, 2)) && is.finite(f_fun(sol2$x)) && abs(f_fun(sol2$x)) <= 1e-4
       if (ok2) sol <- sol2
     }
-    
-    ok_final <- !is.null(sol) &&
-      is.finite(sol$x) &&
-      sol$x > T0 &&
-      is.finite(f_fun(sol$x)) &&
-      abs(f_fun(sol$x)) <= 1e-4
-    
+
+    ok_final <- !is.null(sol) && is.finite(sol$x) && sol$x > T0 &&
+      is.finite(f_fun(sol$x)) && abs(f_fun(sol$x)) <= 1e-4
+
     if (ok_final) {
       out[i] <- sol$x
       res_vals[i] <- f_fun(sol$x)
       next
     }
-    
-    # -------------------------
-    # Attempt 3: uniroot bracket
-    # -------------------------
-    f_lo <- f_fun(t_lo)        # should be negative when yi > A
+
+    f_lo <- f_fun(t_lo)
     f_hi <- f_fun(t_hard)
-    
-    # Expand upper bound ONLY up to t_hard (which is already bounded)
+
     if (is.finite(f_lo) && is.finite(f_hi) && f_lo * f_hi > 0) {
-      t_try <- t_hard
-      # Try a few increasing points between t_lo and t_hard
-      # (monotone f => if no sign change by t_hard, no root in [t_lo,t_hard])
       for (k in 1:10) {
         t_mid <- t_lo + (k / 10) * (t_hard - t_lo)
         f_mid <- f_fun(t_mid)
@@ -562,42 +479,32 @@ invert_branchB_NR <- function(y, T_treat, eta,
           break
         }
       }
-    } else {
-      t_hi <- t_hard
     }
-    
-    root <- NULL
+
     if (is.finite(f_lo) && is.finite(f_hi) && f_lo * f_hi <= 0) {
-      root <- tryCatch(
-        stats::uniroot(f_fun, lower = t_lo, upper = t_hi, tol = tol)$root,
+      ur <- tryCatch(
+        stats::uniroot(f_fun, interval = c(t_lo, t_hi), tol = tol),
         error = function(e) NULL
       )
-    }
-    
-    if (!is.null(root) && is.finite(root) && root > T0) {
-      out[i] <- root
-      res_vals[i] <- f_fun(root)
+      if (!is.null(ur) && is.finite(ur$root)) {
+        out[i] <- ur$root
+        res_vals[i] <- f_fun(ur$root)
+      } else {
+        out[i] <- t_hard
+        res_vals[i] <- f_fun(t_hard)
+      }
     } else {
-      # Final placeholder: bounded (not astronomically huge)
       out[i] <- t_hard
       res_vals[i] <- f_fun(t_hard)
     }
   }
-  
+
   list(times = out, residuals = res_vals)
 }
 
 
 
-
-#..............................................................................
-#..............................................................................
-# ---- Breslow baseline from coxph with tt() ----
-#..............................................................................
-#..............................................................................
-
-
-# breslow estimator with different model case handling
+# Breslow baseline estimator for models with tt() terms
 
 bh_from_tt <- function(fit, dat) {
   # Coefficients actually estimated in this fit
@@ -657,25 +564,13 @@ bh_from_tt <- function(fit, dat) {
 
 
 
-
-#..............................................................................
-#..............................................................................
-# ----True baseline hazard pieces----
-#..............................................................................
-#..............................................................................
-
-# TRUE baseline (Weibull) 
+# True baseline hazard functions (Weibull)
 true_Lambda0 <- function(t, beta_E, lambda_E) (lambda_E * t)^beta_E # cumulative baseline hazard
 true_h0      <- function(t, beta_E, lambda_E) (lambda_E^beta_E) * beta_E * t^(beta_E - 1) # Baseline hazard
 
 
 
-
-#..............................................................................
-#..............................................................................
-# ---- CLSR/L0/h0 at a given horizon t_lim from basehaz jumps ----
-#..............................................................................
-#..............................................................................
+# CLSR/L0/h0 at horizon t_lim from basehaz jumps
 
 
 .clsr_L0_h0_at_t <- function(bh, gamma0, gamma_d, t_lim) {
@@ -739,31 +634,18 @@ true_h0      <- function(t, beta_E, lambda_E) (lambda_E^beta_E) * beta_E * t^(be
 
 
 
-# ----EOF----
-
-
-
-# 03_cache_and_run.R
-
-
-# ----TOP----
-
-
-#..............................................................................
-#..............................................................................
+# ===== 03: Cache and scenario run =====
 # File helpers
-#..............................................................................
-#..............................................................................
 
 .scenario_file <- function(row_idx, B, data_dir = DATA_DIR) {
   file.path(data_dir, sprintf("scen_%04d__B_%d.rds", row_idx, B))
 }
-
-
+# File helper for per-rep summaries (one file per scenario)
 
 .rep_summaries_file <- function(row_idx, data_dir = DATA_DIR) {
   file.path(data_dir, sprintf("rep_summaries_scen_%04d.rds", row_idx))
 }
+
 
 
 
@@ -783,15 +665,11 @@ true_h0      <- function(t, beta_E, lambda_E) (lambda_E^beta_E) * beta_E * t^(be
   length(list.files(d, pattern = "\\.done$", full.names = FALSE))
 }
 
-
-
-#..............................................................................
-#..............................................................................
-# ----Precompute all datasets for each scenario----
-#..............................................................................
-#..............................................................................
+# Precompute all datasets for each scenario
 
 precompute_all_datasets <- function() {
+  # Step 1: build and save all datasets.
+  # This lets us rerun model fitting later without generating data again.
   cat("Preparing datasets into: ", normalizePath(DATA_DIR, winslash = "/"), "\n", sep = "")
   pb_total <- nrow(param_grid) * B
   progressr::with_progress({
@@ -804,16 +682,52 @@ precompute_all_datasets <- function() {
       hrZ <- row$HR
       lgD <- row$gam_d
       gamma0 <- log(hrZ)
-
-      # bound  <- stats::qweibull(p = quantile, shape = be, scale = 1 / lambda_E) # UNCOMMENT THIS FOR Uniform DGP
-      bound  <- Inf 
+      bound <- if (dgp_type == "uniform") {
+        stats::qweibull(p = quantile, shape = be, scale = 1 / lambda_E)
+      } else {
+        Inf
+      }
 
       
-      # Build list of B datasets for this scenario
+      # # Build list of B datasets for this scenario
+      # datasets <- vector("list", length = B)
+      # for (b in seq_len(B)) {
+      #   seed <- SEED_BASE * row_idx + b
+      #   datasets[[b]] <- generate_cohort(
+      #     n = n,
+      #     beta_T = row$beta_T, lambda_T = lambda_T,
+      #     beta_E = be,         lambda_E = lambda_E,
+      #     gamma0 = gamma0,     gam_d    = lgD,
+      #     study_time = study_time,
+      #     alpha0 = alpha0, a_x1 = row$a_x1, a_x2 = row$a_x2,
+      #     tol = tol, treat_bound = bound, max_it = max_it,
+      #     seed = seed
+      #   )
+      #   p(message = sprintf("prep scen %d/%d rep %d/%d", row_idx, nrow(param_grid), b, B), amount = 1)
+      # }
+      
+      # # Save exactly the list plus a small header for audit
+      # meta <- list(
+      #   param_row   = row,
+      #   lambda_E    = lambda_E,
+      #   lambda_T    = lambda_T,
+      #   study_time  = study_time,
+      #   alpha0      = alpha0,
+      #   tol         = tol,
+      #   max_it      = max_it,
+      #   quantile    = quantile,
+      #   seed_base   = SEED_BASE,
+      #   created_at  = Sys.time()
+      # )
+      # saveRDS(list(meta = meta, datasets = datasets), .scenario_file(row_idx, B))
+
+
       datasets <- vector("list", length = B)
+      all_event_times <- vector("list", length = B)
+
       for (b in seq_len(B)) {
         seed <- SEED_BASE * row_idx + b
-        datasets[[b]] <- generate_cohort(
+        dat_b <- generate_cohort(
           n = n,
           beta_T = row$beta_T, lambda_T = lambda_T,
           beta_E = be,         lambda_E = lambda_E,
@@ -823,10 +737,28 @@ precompute_all_datasets <- function() {
           tol = tol, treat_bound = bound, max_it = max_it,
           seed = seed
         )
+
+        datasets[[b]] <- dat_b
+        all_event_times[[b]] <- dat_b$futime[dat_b$status == 1]
+
         p(message = sprintf("prep scen %d/%d rep %d/%d", row_idx, nrow(param_grid), b, B), amount = 1)
       }
-      
-      # Save exactly the list plus a small header for audit
+
+      pooled_ev_times <- sort(unlist(all_event_times, use.names = FALSE))
+
+      q_times_all <- if (length(pooled_ev_times) > 0L) {
+        as.numeric(stats::quantile(
+          pooled_ev_times,
+          probs = q_probs,
+          type = 7,
+          names = FALSE
+        ))
+      } else {
+        rep(NA_real_, length(q_probs))
+      }
+
+      names(q_times_all) <- q_names
+
       meta <- list(
         param_row   = row,
         lambda_E    = lambda_E,
@@ -837,25 +769,24 @@ precompute_all_datasets <- function() {
         max_it      = max_it,
         quantile    = quantile,
         seed_base   = SEED_BASE,
+        q_times_all = q_times_all,
         created_at  = Sys.time()
       )
+
       saveRDS(list(meta = meta, datasets = datasets), .scenario_file(row_idx, B))
+
     }
   })
   cat("Precompute complete.\n")
 }
 
 
-
-
-#..............................................................................
-#..............................................................................
-# ----Scenario runner----
-#..............................................................................
-#..............................................................................
-
-
+# Scenario runner that loads cached data and fits models
+# Parallelism happens over replications inside each scenario
 run_scenario <- function(row_idx) {
+  # Step 2: run one scenario.
+  # Load cached data, fit all models for each replication,
+  # and return one summary chunk.
   row    <- param_grid[row_idx, ]
   bt     <- row$beta_T
   be     <- row$beta_E
@@ -882,17 +813,23 @@ run_scenario <- function(row_idx) {
   if (length(payload$datasets) != B)
     stop("Cache file has ", length(payload$datasets), " reps but B = ", B, " in memory.")
   
-  # pooled quantiles per scenario (outside replication loop)
-  pooled_ev_times <- sort(unlist(lapply(
-    payload$datasets,
-    function(d) d$futime[d$status == 1 & d$futime <= study_time]
-  ), use.names = FALSE))
+  # pooled_ev_times <- sort(unlist(lapply(
+  #   payload$datasets,
+  #   function(d) d$futime[d$status == 1 & d$futime <= study_time]
+  # ), use.names = FALSE))
   
-  q_times_all <- if (length(pooled_ev_times) > 0L) {
-    as.numeric(stats::quantile(pooled_ev_times,
-                               probs = q_probs,
-                               type = 7, names = FALSE))
-  } else rep(NA_real_, 3)
+  # q_times_all <- if (length(pooled_ev_times) > 0L) {
+  #   as.numeric(stats::quantile(pooled_ev_times,
+  #                              probs = q_probs,
+  #                              type = 7, names = FALSE))
+  # } else rep(NA_real_, 3)
+
+  q_times_all <- payload$meta$q_times_all
+  if (is.null(q_times_all) || length(q_times_all) != length(q_probs)) {
+    stop("Missing or malformed q_times_all in scenario metadata for row ", row_idx)
+  }
+  q_times_all <- as.numeric(q_times_all)
+  names(q_times_all) <- q_names
   
   
   # ---- Scenario-level audit metadata ----
@@ -915,55 +852,65 @@ run_scenario <- function(row_idx) {
   cat("Already completed reps on disk:", already, "out of", B, "\n")
   
   
-  
+
+  true_clsr_population <- function(tlim, beta_E, lambda_E, gamma0, gamma_d,
+                                  eps0 = 1e-12, rel.tol = 1e-10) {
+    if (!is.finite(tlim) || tlim <= 0) return(NA_real_)
+    if (!is.finite(beta_E) || beta_E <= 0) stop("beta_E must be > 0")
+    if (!is.finite(lambda_E) || lambda_E <= 0) stop("lambda_E must be > 0")
+    if (!is.finite(gamma0) || !is.finite(gamma_d)) return(NA_real_)
+
+    if (abs(gamma_d) < 1e-12) return(exp(gamma0))  # CLSR(t)=e^{gamma0} when gamma_d=0
+
+    h0 <- function(u) {
+      u <- pmax(u, eps0)  # avoids u^(beta_E-1) at 0 when beta_E<1
+      (lambda_E^beta_E) * beta_E * u^(beta_E - 1)
+    }
+
+    # integrand <- function(u) h0(u) * exp(gamma_d * u)
+
+    integrand <- function(u) {
+      u <- pmax(u, eps0)
+      h0 <- (lambda_E^beta_E) * beta_E * u^(beta_E - 1)
+      h0 * exp(gamma_d * u)
+    }
 
 
-#   true_clsr_population <- function(tlim, beta_E, lambda_E, gamma0, gamma_d) {
-#   if (!is.finite(tlim) || tlim <= 0) return(NA_real_)
-#   if (abs(gamma_d) < 1e-12) return(exp(gamma0))
-
-#   h0 <- function(u) (lambda_E^beta_E) * beta_E * (u^(beta_E - 1))
-#   integrand <- function(u) h0(u) * exp(gamma_d * u)
-
-#   num <- stats::integrate(integrand, lower = 0, upper = tlim, rel.tol = 1e-10)$value
-#   den <- (lambda_E * tlim)^beta_E
-#   exp(gamma0) * num / den
-# }
-
-
-true_clsr_population <- function(tlim, beta_E, lambda_E, gamma0, gamma_d) {
-  if (!is.finite(tlim) || tlim <= 0) return(NA_real_)
-  if (abs(gamma_d) < 1e-12) return(exp(gamma0))
-
-  eps0 <- 1e-12
-  integrand <- function(u) {
-    u <- pmax(u, eps0)
-    h0 <- (lambda_E^beta_E) * beta_E * u^(beta_E - 1)
-    h0 * exp(gamma_d * u)
+    num <- stats::integrate(integrand, lower = 0, upper = tlim,
+                            rel.tol = rel.tol, subdivisions = 200L)$value
+    den <- (lambda_E * tlim)^beta_E  # Lambda0(tlim)
+    exp(gamma0) * num / den
   }
 
-  num <- stats::integrate(integrand, lower = 0, upper = tlim,
-                          rel.tol = 1e-10, subdivisions = 200L)$value
-  den <- (lambda_E * tlim)^beta_E
-  exp(gamma0) * num / den
-}
+
+  clsr_truth_pop_vec <- vapply(
+    q_times_all, true_clsr_population, numeric(1),
+    beta_E = be, lambda_E = lambda_E,
+    gamma0 = gamma0, gamma_d = loghr_D
+  )
+
+
+  scenario_L0_true_vec <- ifelse(
+    is.finite(q_times_all),
+    true_Lambda0(q_times_all, be, lambda_E),
+    NA_real_
+  )
+
+  scenario_h0_true_vec <- ifelse(
+    is.finite(q_times_all),
+    true_h0(pmax(q_times_all, 1e-12), be, lambda_E),
+    NA_real_
+  )
 
 
 
-clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
-                         numeric(1),
-                         beta_E = be, lambda_E = lambda_E,
-                         gamma0 = gamma0, gamma_d = loghr_D)
-
-
-
-
-
-
+  
   # =========================================================================
   # Define a function to process ONE replication
   # =========================================================================
   process_one_rep <- function(b) {
+    # One parallel task = one replication inside one scenario.
+    # This keeps each worker job simple and easier to recover.
     dat <- payload$datasets[[b]]
     if (!is.data.frame(dat)) stop("Cached object for scen ", row_idx, " rep ", b, " is not a data.frame")
     
@@ -998,24 +945,13 @@ clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
     names(post_upto_q_vec) <- q_names
     
     # True CLSR computation
-    # q_times <- q_times_all
-    # disc_true_clsr <- function(tlim) {
-    #   if (!is.finite(tlim)) return(NA_real_)
-    #   ev_times_rep <- sort(dat$futime[dat$status == 1 & dat$futime <= study_time])
-    #   tt <- ev_times_rep[ev_times_rep <= tlim]
-    #   if (length(tt) == 0) return(NA_real_)
-    #   L0_true_at <- true_Lambda0(tt, be, lambda_E)
-    #   dLam_true  <- diff(c(0, L0_true_at))
-    #   exp(gamma0) * (sum(dLam_true * exp(loghr_D * tt)) / sum(dLam_true))
-    # }
-    # clsr_true_vec <- vapply(q_times, disc_true_clsr, numeric(1))
+    q_times <- q_times_all
 
-    # clsr_true_vec <- clsr_truth_pop
-    
-    L0_true_vec <- ifelse(is.finite(q_times), true_Lambda0(q_times, be, lambda_E), NA_real_)
-    h0_true_vec <- ifelse(is.finite(q_times), true_h0(q_times, be, lambda_E), NA_real_)
-    
-    # Prepare D_treat column
+
+
+
+    # D_treat is the second tt() input.
+    # We set it clearly here so model code and data setup stay consistent.
     dat$D_treat <- dat$T_treat
     
     # Storage for this replication's model results
@@ -1044,14 +980,14 @@ clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
     rownames(est_CLSR_q) <- c("q1","q2","q3")
     rownames(est_L0_q)   <- c("q1","q2","q3")
     rownames(est_h0_q)   <- c("q1","q2","q3")
-    
-    
-    
+
     j <- 0L
     for (mdl_name in names(model_specs)) {
       j <- j + 1L
       spec <- model_specs[[mdl_name]]
-      
+
+      # tt_vars tells us which tt() functions to use for this model.
+      # We build those functions here before fitting.
       tt_funs <- switch(paste(spec$tt_vars, collapse = ","),
                         "Z0,D0" = list(
                           function(x, t, ...) as.integer(t > x),
@@ -1061,7 +997,7 @@ clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
                         "D0" = function(x, t, ...) pmax(0, t - x),
                         NULL
       )
-      
+
       fit <- NULL
       vals <- tryCatch({
         fit <- survival::coxph(
@@ -1144,12 +1080,10 @@ clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
       Dpost_max = Dpost_max_val,
       post_upto_q = post_upto_q_vec,
 
-      # truth_CLSR = clsr_true_vec,
-      truth_CLSR = clsr_truth_pop,
+      truth_CLSR = clsr_truth_pop_vec,
+      truth_L0 = scenario_L0_true_vec,
+      truth_h0 = scenario_h0_true_vec,
 
-
-      truth_L0 = L0_true_vec,
-      truth_h0 = h0_true_vec,
       est_Z = est_Z_vec,
       est_D = est_D_vec,
       bh_rmse = bh_rmse_vec,
@@ -1164,15 +1098,7 @@ clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
   # =========================================================================
   # RUN REPLICATIONS IN PARALLEL
   # =========================================================================
-  # rep_results <- furrr::future_map(
-  #   seq_len(B),
-  #   process_one_rep,
-  #   .options = furrr::furrr_options(
-  #     seed = TRUE,
-  #     packages = c("survival", "stats")
-  #   ),
-  #   .progress = TRUE
-  # )
+
   
   rep_results <- furrr::future_map(
     seq_len(B),
@@ -1185,6 +1111,7 @@ clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
     .progress = TRUE
   )
   
+
   
   saveRDS(
     list(
@@ -1219,15 +1146,18 @@ clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
   post_upto_q_mat <- do.call(rbind, lapply(rep_results, `[[`, "post_upto_q"))
   
   # Truth vectors (length B each)
-  truth_CLSR_q_c1 <- vapply(rep_results, function(r) r$truth_CLSR[1], numeric(1))
-  truth_CLSR_q_c2 <- vapply(rep_results, function(r) r$truth_CLSR[2], numeric(1))
-  truth_CLSR_q_c3 <- vapply(rep_results, function(r) r$truth_CLSR[3], numeric(1))
-  truth_L0_q_c1   <- vapply(rep_results, function(r) r$truth_L0[1], numeric(1))
-  truth_L0_q_c2   <- vapply(rep_results, function(r) r$truth_L0[2], numeric(1))
-  truth_L0_q_c3   <- vapply(rep_results, function(r) r$truth_L0[3], numeric(1))
-  truth_h0_q_c1   <- vapply(rep_results, function(r) r$truth_h0[1], numeric(1))
-  truth_h0_q_c2   <- vapply(rep_results, function(r) r$truth_h0[2], numeric(1))
-  truth_h0_q_c3   <- vapply(rep_results, function(r) r$truth_h0[3], numeric(1))
+  truth_CLSR_q_c1 <- rep(clsr_truth_pop_vec[1], B)
+  truth_CLSR_q_c2 <- rep(clsr_truth_pop_vec[2], B)
+  truth_CLSR_q_c3 <- rep(clsr_truth_pop_vec[3], B)
+
+  truth_L0_q_c1 <- rep(scenario_L0_true_vec[1], B)
+  truth_L0_q_c2 <- rep(scenario_L0_true_vec[2], B)
+  truth_L0_q_c3 <- rep(scenario_L0_true_vec[3], B)
+
+  truth_h0_q_c1 <- rep(scenario_h0_true_vec[1], B)
+  truth_h0_q_c2 <- rep(scenario_h0_true_vec[2], B)
+  truth_h0_q_c3 <- rep(scenario_h0_true_vec[3], B)
+
   
   # Model estimates: B x M matrices
   est_Z <- do.call(rbind, lapply(rep_results, `[[`, "est_Z"))
@@ -1312,21 +1242,8 @@ clsr_truth_pop <- vapply(q_times_all, true_clsr_population,
   
   dplyr::bind_rows(out)
 }
-
-# ----EOF----
-
-
-# 02_data.R
-
-
-# ----TOP----
-
-
-#..............................................................................
-#..............................................................................
-# ----Diagnostics container----
-#..............................................................................
-#..............................................................................
+# ===== 02: Data generation =====
+# Diagnostics container
 
 diagnostics <- data.frame(
   y        = numeric(),
@@ -1339,16 +1256,7 @@ diagnostics <- data.frame(
   stringsAsFactors = FALSE
 )
 
-
-
-
-
-
-#..............................................................................
-#..............................................................................
-# ----Data generating process----
-#..............................................................................
-#..............................................................................
+# Data generating process
 
 generate_cohort <- function(n,
                             beta_T ,
@@ -1359,23 +1267,15 @@ generate_cohort <- function(n,
                             gam_d,
                             study_time,
                             alpha0 ,
-                            a_x1 ,
-                            a_x2  ,
-                            tol  ,
-                            treat_bound,
-                            max_it,
-                            
+                            a_x1,
+                            a_x2,
+                            tol = 1e-8,
+                            treat_bound = 8,
+                            max_it = 50,
                             seed = NULL) {
-  
-  
-  
-  
-  
+  # Given the same inputs and seed, this makes the same cohort each time.
+  # That makes reruns reproducible.
   if (!is.null(seed)) set.seed(seed)
-  
-  ## 1. baseline covariates -------------------------------------------
-  
-  
   
   p_bin <- c(0.30)
   X <- cbind(
@@ -1401,11 +1301,12 @@ generate_cohort <- function(n,
   
   
   ## treatment time: Uniform(0, treat_bound) -----------
-  # T_treat <- runif(n, min = 0, max = treat_bound) # uncomment bound in the function precompute_all_datasets(.)
-  
-  
-  # weibull treatment times
-  T_treat   <- ( ( -log(1 - uT) )^(1 / beta_T) ) / lambda_T
+  if (dgp_type == "uniform") {
+    T_treat <- runif(n, min = 0, max = treat_bound)
+  } else {
+    # weibull treatment times
+    T_treat <- ((-log(1 - uT))^(1 / beta_T)) / lambda_T
+  }
   
   
   # purpose to avoid numerical problems for too small T_treat
@@ -1424,6 +1325,7 @@ generate_cohort <- function(n,
   idx_A <- y < yThr                                   # fail before Treatment
   
   
+  # cat("=> T_event\n")
   
   
   ## ----- Region A: event before treatment ------------------------
@@ -1448,8 +1350,7 @@ generate_cohort <- function(n,
   ## ----- 4C. Region B, γ_d ≠ 0 ----------------------------------
   idx_Bg <- (!idx_A) & (gam_d != 0)
   if (any(idx_Bg)) {
-    # analytic vs numeric comparison for β_E = 1 or 2
-    # if (beta_E %in% c(1, 2)) {
+    # Use analytic only when beta_E == 1, otherwise use numeric inversion.
     if (beta_E %in% c(1)) {
       
       # 1) compute analytic times
@@ -1461,13 +1362,9 @@ generate_cohort <- function(n,
         gamma0,
         gam_d
       )
-      
-      # 4) store the numeric solution 
-      T_event[idx_Bg]   <- analytic_times
 
-      
+      T_event[idx_Bg] <- analytic_times
     } else {
-      # fallback: pure numeric inversion
       res <- invert_branchB_NR(
         y         = y[idx_Bg],
         T_treat   = T_treat[idx_Bg],
@@ -1498,6 +1395,7 @@ generate_cohort <- function(n,
   colnames(X2cols) <- c("X1","X2")
   
   ## 6) Return ONE ROW per subject (no splitting)
+  # Downstream model code expects one row per subject.
   base <- cbind(
     data.frame(
       id      = 1:n,
@@ -1513,29 +1411,17 @@ generate_cohort <- function(n,
   
 }
 
-
-
-
-
-
-
-# ----EOF----
-
-
-
-
-
-
-# 04_main_and_summary.R
-
-# ----TOP----
-
-
-
+# ===== 04: Main pipeline and summary =====
 set_parallel_plan <- function() {
+  # Parallel plan:
+  # - scenarios run one by one
+  # - replications inside a scenario run in parallel
   workers <- as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", "1"))
   if (!is.finite(workers) || workers < 1) workers <- 1L
   
+  # IMPORTANT: our run_scenario() captures a huge `payload` object.
+  # multisession would copy it to each worker (slow + memory blowup).
+  # multicore (Linux) shares memory via fork (much more efficient here).
   if (.Platform$OS.type == "unix" && future::supportsMulticore()) {
     future::plan(future::multicore, workers = workers)
     plan_name <- "multicore"
@@ -1547,14 +1433,8 @@ set_parallel_plan <- function() {
   cat("Future plan:", plan_name, "| workers:", workers, "\n")
 }
 
-
-
-#..............................................................................
-#..............................................................................
-# Driver: build cache, run scenarios, gather results
-#..............................................................................
-#..............................................................................
-
+# Driver: build cache (optional), run scenarios sequentially,
+# and parallelize replications within each scenario
 run_pipeline <- function() {
   if (PREPARE_DATA) {
     total_start <- Sys.time()
@@ -1582,23 +1462,19 @@ run_pipeline <- function() {
   return(results)
 }
 
-
-
-#..............................................................................
-#..............................................................................
 # Build summaries and save
-#..............................................................................
-#..............................................................................
 
 
 summarize_and_save <- function(results) {
+  # Single summary gate for all metrics so we have one source of truth for
+  # post-processing and file outputs.
   if (!is.null(results)) {
     summ_par <- results %>%
       dplyr::transmute(
         n, beta_T, beta_E, a_x1, a_x2, gam_d, HR, model,
         truth_logHR_Z = log(HR),      truth_HR_Z = HR,
         truth_logHR_D = gam_d,        truth_HR_D = exp(gam_d),
-        
+
         # Z (log-HR)
         mean_logHR_Z = purrr::map_dbl(sim_Z, ~ mean(.x, na.rm = TRUE)),
         sd_logHR_Z   = purrr::map_dbl(sim_Z, ~ stats::sd(.x,  na.rm = TRUE)),
@@ -1637,9 +1513,7 @@ summarize_and_save <- function(results) {
         
         
         
-        # ============================================================
         # Post-treatment event timing diagnostics
-        # ============================================================
         
         # --- Counts of events BEFORE treatment switch (per replication, then summarized) ---
         mean_events_pre  = purrr::map_dbl(events_pre,  ~ mean(.x, na.rm = TRUE)),       # avg # pre-treatment events across reps
@@ -1674,9 +1548,7 @@ summarize_and_save <- function(results) {
         q90_prop_events_post  = purrr::map_dbl(prop_events_post, ~ stats::quantile(.x, 0.90, na.rm = TRUE, type=7)),# 90th %ile post-event proportion
         
         
-        # ============================================================
-        # D(t)=futime - T_treat among POST-treatment failures only
-        # ============================================================
+        # D(t)=futime - T_treat among post-treatment failures
         
         mean_D_post_n   = purrr::map_dbl(D_post_n,   ~ mean(.x, na.rm = TRUE)),  # avg # post-treatment failures across reps
         mean_D_post_sd  = purrr::map_dbl(D_post_sd,  ~ mean(.x, na.rm = TRUE)),  # avg SD of (futime - T_treat) across reps
@@ -1690,9 +1562,7 @@ summarize_and_save <- function(results) {
         q90_D_post_max  = purrr::map_dbl(D_post_max, ~ stats::quantile(.x, 0.90, na.rm = TRUE, type = 7)), # 90th %ile of per-rep max delays
         
         
-        # ============================================================
         # Horizon-specific post-treatment event counts (B x K matrix)
-        # ============================================================
         
         mean_post_events_upto_q = purrr::map(post_events_upto_q, ~ colMeans(.x, na.rm = TRUE)), # named vector: mean count per horizon
         sd_post_events_upto_q   = purrr::map(post_events_upto_q, ~ apply(.x, 2, stats::sd, na.rm = TRUE)), # named vector: SD per horizon
@@ -1779,51 +1649,45 @@ summarize_and_save <- function(results) {
 }
 
 
+# Main entrypoint
+
+print_runtime <- function(start_time, end_time) {
+  elapsed_secs <- as.numeric(difftime(end_time, start_time, units = "secs"))
+  elapsed_mins <- elapsed_secs / 60
+  elapsed_hours <- elapsed_mins / 60
+
+  cat("\n================ PIPELINE RUNTIME =================\n")
+  cat(sprintf("Start time : %s\n", start_time))
+  cat(sprintf("End time   : %s\n", end_time))
+  cat(sprintf("Elapsed    : %.2f seconds (%.2f minutes | %.2f hours)\n",
+              elapsed_secs, elapsed_mins, elapsed_hours))
+  cat("==================================================\n")
+}
+
+main <- function() {
+  pipeline_start_time <- Sys.time()
+
+  set_parallel_plan()
+  results <- run_pipeline()
+  summ_par <- summarize_and_save(results)
+
+  print(as.data.frame(summ_par), row.names = FALSE, max = 1e6)
+
+  w <- warnings()
+  if (!is.null(w)) print(utils::head(w, 10))
+
+  pipeline_end_time <- Sys.time()
+  print_runtime(pipeline_start_time, pipeline_end_time)
+
+  invisible(summ_par)
+}
+
+if (sys.nframe() == 0) {
+  main()
+}
 
 
-#..............................................................................
-#..............................................................................
-#---- Main ----
-#..............................................................................
-#..............................................................................
 
-# ---- GLOBAL TIMER START ----
-PIPELINE_START_TIME <- Sys.time()
-
-set_parallel_plan()
-results <- run_pipeline()
-
-summ_par <- summarize_and_save(results)
-
-
-print(as.data.frame(summ_par), row.names = FALSE, max = 1e6)
-
-
-w <- warnings()           # returns an object of class "warnings"
-# just a few:
-if (!is.null(w)) print(utils::head(w, 10))
-
-
-
-summ_par # this contains all things i need
-
-
-# ---- GLOBAL TIMER END ----
-PIPELINE_END_TIME <- Sys.time()
-
-elapsed_secs <- as.numeric(difftime(PIPELINE_END_TIME, PIPELINE_START_TIME, units = "secs"))
-elapsed_mins <- elapsed_secs / 60
-elapsed_hours <- elapsed_mins / 60
-
-cat("\n================ PIPELINE RUNTIME =================\n")
-cat(sprintf("Start time : %s\n", PIPELINE_START_TIME))
-cat(sprintf("End time   : %s\n", PIPELINE_END_TIME))
-cat(sprintf("Elapsed    : %.2f seconds (%.2f minutes | %.2f hours)\n",
-            elapsed_secs, elapsed_mins, elapsed_hours))
-cat("==================================================\n")
-
-
-# ----EOF----
 
 
 
